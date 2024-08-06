@@ -1,0 +1,38 @@
+
+<launch>
+
+    <arg name="marker1Id"         default="12"/>
+    <arg name="marker2Id"         default="8"/>
+    <arg name="markerSize"        default="0.05"/>    <!-- in m -->
+    <arg name="eye"               default="left"/>
+    <arg name="dct_normalization" default="True" />
+    <arg name="dct_filter_size"   default="2" />
+    <arg name="marker1_frame"     default="marker_object" />
+    <arg name="marker2_frame"     default="marker_fixed" />
+
+
+    <node pkg="aruco_ros" type="double" name="aruco_simple">    
+        <remap from="/camera_info" to="/camera/color/camera_info" />
+        <remap from="/image" to="/camera/color/image_raw" />
+        <param name="image_is_rectified" value="True"/>
+        <param name="marker_size" value="$(arg markerSize)"/>
+        <param name="marker_id1" value="$(arg marker1Id)"/>
+        <param name="marker_id2" value="$(arg marker2Id)"/>
+        <param name="normalizeImage" value="$(arg dct_normalization)"/>
+        <param name="dct_components_to_remove" value="$(arg dct_filter_size)"/>
+        <param name="parent_name" value="camera_color_optical_frame"/>
+        <param name="child_name1" value="$(arg marker1_frame)" />
+        <param name="child_name2" value="$(arg marker2_frame)" />
+        <!-- <param name="transform" value="-0.035583 -0.0409321 0.0416532 0.00517607 0.00538548 0.00720203 0.999946" /> -->
+        <param name="source_frame" value="camera_color_optical_frame"/>
+        <param name="target_frame" value="base_link"/>
+    </node>
+
+  <node pkg="tf2_ros" type="static_transform_publisher" name="camera_link_broadcaster"
+      args="-0.035583 -0.0409321 0.0416532   0.00517607 0.00538548 0.00720203 0.999946 wrist_3_link camera_color_optical_frame" />
+
+</launch>
+
+
+
+
