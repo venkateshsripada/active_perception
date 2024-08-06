@@ -11,3 +11,4 @@ This code runs on the aruco_ros package built for ROS Melodic
 1. Add the .launch file to the launch folder
 2. Replace the CMakeLists.txt in the aruco_ros folder with this
 3. In the /aruco_ros/src folder replace the simple_double.cpp with this
+4. Replace the /aruco_ros/include folder with the include folder here
