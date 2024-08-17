@@ -99,13 +99,26 @@ int marker_id1;
 int marker_id2;
 
 bool initial_marker_pose_set = false;
-cv::Mat initial_Rvec, initial_Tvec;
+cv::Mat initial_Rvec;
+cv::Mat initial_Tvec;
 
 Eigen::Matrix4f cached_transform_matrix;
 std::mutex transform_mutex;
+cv::Mat cubepoints(8, 3, CV_32F);
 bool transform_cached = false;
 bool got_error = false;
-double count = 0;
+bool got_new_marker = false;
+int prev_marker_id;
+int scale = 5;
+aruco::Marker prev_marker;
+
+bool got_TR_inital_marker = false;
+cv::Mat marker1_BaseLink_matrix(4,4, CV_32F);
+cv::Mat marker2_BaseLink_matrix;
+bool correct_transform = false;
+bool computed_cube_points = false;
+
+std::array<int, 4> all_markers = {2,8,5,10};
 // cv::Mat initial_image;
 // Eigen::Matrix4f transform_matrix;
 // cv::Mat background_image;  // Static image with the fixed grid
@@ -113,7 +126,7 @@ double count = 0;
 
 
 
-void transformPoseToBaseLink(const cv::Mat& Rvec, const cv::Mat& Tvec, const Eigen::Matrix4f& transform_matrix, cv::Mat& transformed_Rvec, cv::Mat& transformed_Tvec){
+Eigen::Matrix4f transformPoseToBaseLink(const cv::Mat& Rvec, const cv::Mat& Tvec, const Eigen::Matrix4f& transform_matrix){
     // Convert Rvec and Tvec to Eigen
     cv::Mat Rmat;
     cv::Rodrigues(Rvec, Rmat);
@@ -135,17 +148,27 @@ void transformPoseToBaseLink(const cv::Mat& Rvec, const cv::Mat& Tvec, const Eig
     Eigen::Vector3f transformed_T = transformed_pose.block<3, 1>(0, 3);
 
     // Convert back to cv::Mat
-    cv::Mat transformed_Rmat;
-    cv::eigen2cv(transformed_R, transformed_Rmat);
-    cv::Rodrigues(transformed_Rmat, transformed_Rvec);
-    cv::eigen2cv(transformed_T, transformed_Tvec);
+    // cv::Mat transformed_Rmat;
+    // cv::eigen2cv(transformed_R, transformed_Rmat);
+    // cv::Rodrigues(transformed_Rmat, transformed_Rvec);
+    // cv::eigen2cv(transformed_T, transformed_Tvec);
+
+    // for(int i = 0; i < transformed_pose.rows(); ++i) {
+    //     for(int j = 0; j < transformed_pose.cols(); ++j) {
+    //         ROS_INFO("Base link matrix(%d,%d) = %f", i, j, transformed_pose(i,j));
+    //     }
+    // }
+
+    return transformed_pose;
+
+    
 }
 
 // Function to get the transformation matrix from source_frame to target_frame
 Eigen::Matrix4f getTransformMatrix(const std::string& source_frame, const std::string& target_frame) {
     tf::TransformListener listener;
     tf::StampedTransform transform;
-    Eigen::Matrix4f matrix;
+    Eigen::Matrix4f matrix = Eigen::Matrix4f::Identity();
     
     try {
         // Wait for the transform to be available
@@ -157,26 +180,47 @@ Eigen::Matrix4f getTransformMatrix(const std::string& source_frame, const std::s
         // Convert to a 4x4 matrix
         tf::Matrix3x3 rotation_matrix = transform.getBasis();
         tf::Vector3 translation_vector = transform.getOrigin();
+
+        for (int i = 0; i < 3; ++i) {
+          tf::Vector3 row = rotation_matrix.getRow(i);
+          ROS_INFO("rotation_matrix %d: [%f, %f, %f]", i, row.x(), row.y(), row.z());
+        }
+
+        ROS_INFO("Translation vector : [%f, %f, %f]", translation_vector.getX(), translation_vector.getY(), translation_vector.getZ());
         
+        
+        // Eigen::Matrix3f eigen_rotation;
+        // eigen_rotation << 
+        //     rotation_matrix[0][0], rotation_matrix[0][1], rotation_matrix[0][2],
+        //     rotation_matrix[1][0], rotation_matrix[1][1], rotation_matrix[1][2],
+        //     rotation_matrix[2][0], rotation_matrix[2][1], rotation_matrix[2][2];
+
         Eigen::Matrix3f eigen_rotation;
         eigen_rotation << 
-            rotation_matrix[0][0], rotation_matrix[0][1], rotation_matrix[0][2],
-            rotation_matrix[1][0], rotation_matrix[1][1], rotation_matrix[1][2],
-            rotation_matrix[2][0], rotation_matrix[2][1], rotation_matrix[2][2];
+            rotation_matrix.getRow(0).x(), rotation_matrix.getRow(0).y(), rotation_matrix.getRow(0).z(),
+            rotation_matrix.getRow(1).x(), rotation_matrix.getRow(1).y(), rotation_matrix.getRow(1).z(),
+            rotation_matrix.getRow(2).x(), rotation_matrix.getRow(2).y(), rotation_matrix.getRow(2).z();
+
 
         Eigen::Vector3f eigen_translation(translation_vector.getX(), translation_vector.getY(), translation_vector.getZ());
         
-        matrix.setIdentity();
+        // matrix.setIdentity();
         matrix.block<3, 3>(0, 0) = eigen_rotation;
         matrix.block<3, 1>(0, 3) = eigen_translation;
         // matrix.block<3, 3>(0, 0) = Eigen::Matrix3f(rotation_matrix);
         // matrix.block<3, 1>(0, 3) = Eigen::Vector3f(translation_vector.getX(), translation_vector.getY(), translation_vector.getZ());
 
         // Optionally, set the bottom row if needed (though it is usually already [0, 0, 0, 1])
-        matrix(3, 0) = 0.0f;
-        matrix(3, 1) = 0.0f;
-        matrix(3, 2) = 0.0f;
-        matrix(3, 3) = 1.0f;
+        // matrix(3, 0) = 0.0f;
+        // matrix(3, 1) = 0.0f;
+        // matrix(3, 2) = 0.0f;
+        // matrix(3, 3) = 1.0f;
+        for(int i = 0; i < matrix.rows(); ++i) {
+          for (int j = 0; j < matrix.cols(); ++j) {
+            ROS_INFO("Transform Matrix in function(%d,%d) = %f", i, j, matrix(i,j));
+            
+          }
+        }
 
         
 
@@ -184,41 +228,12 @@ Eigen::Matrix4f getTransformMatrix(const std::string& source_frame, const std::s
         got_error = true;
         ROS_ERROR("%s", ex.what());
         // Return an identity matrix in case of an error
-        matrix.setIdentity();
+        // matrix.setIdentity();
         
     }
 
     return matrix;
 }
-
-// Function to validate the transform matrix
-bool isValidTransformMatrix(const Eigen::Matrix4f& matrix) {
-    // Example validation: check if the matrix is non-zero
-    if (matrix.isZero()) {
-        return false;
-    }
-    // Additional checks can be added here
-    return true;
-}
-
-  // Function to get the transform matrix with caching
-Eigen::Matrix4f getCachedTransformMatrix(const std::string& source_frame, const std::string& target_frame) {
-      std::lock_guard<std::mutex> lock(transform_mutex);
-      if (!transform_cached || !isValidTransformMatrix(cached_transform_matrix)) 
-      {
-          Eigen::Matrix4f transform_matrix = getTransformMatrix(source_frame, target_frame);
-          if (isValidTransformMatrix(transform_matrix)) {
-              cached_transform_matrix = transform_matrix;
-              transform_cached = true;
-          } else {
-              // Handle invalid transform matrix case
-              ROS_WARN("Computed transform matrix is invalid");
-              throw std::runtime_error("Invalid transform matrix");
-          }
-      }
-      return cached_transform_matrix;
-  }
-
 
 
 void drawDotsOnLine(cv::Mat &Image, cv::Point2f start, cv::Point2f end, float interval, cv::Scalar color, int dotSize) {
@@ -232,67 +247,149 @@ void drawDotsOnLine(cv::Mat &Image, cv::Point2f start, cv::Point2f end, float in
     }
 }
 
-void draw3dCube_scaled(cv::Mat& Image,  const cv::Mat& Rvec, const cv::Mat& Tvec, const aruco::CameraParameters& CP, int lineSize, bool setYperpendicular, double scale)
+cv::Mat get_baseLinkMatrix(cv::Mat& Rvec, cv::Mat& Tvec){
+
+  cv::Mat marker_matrix;
+    // Convert Rvec and Tvec to Eigen
+  cv::Mat Rmat;
+  cv::Rodrigues(Rvec, Rmat);
+  Eigen::Matrix3f R;
+  cv::cv2eigen(Rmat, R);
+  Eigen::Vector3f T;
+  cv::cv2eigen(Tvec, T);
+
+  // Create 4x4 transformation matrix
+  Eigen::Matrix4f temp_marker_matrix = Eigen::Matrix4f::Identity();
+  temp_marker_matrix.block<3, 3>(0, 0) = R;
+  temp_marker_matrix.block<3, 1>(0, 3) = T;
+  // Convert back to cv::Mat
+  cv::eigen2cv(temp_marker_matrix, marker_matrix);
+  got_new_marker = false;
+  return marker_matrix;
+
+}
+
+void get_intial_RotTr(){
+  // Converts 4x4 matrix to rotation and translation matrices
+}
+
+cv::Mat calculate_transfoms(int& scale){
+    cv::Mat objectPoints(8,3, CV_32F);
+  
+    // Box in marker frame
+    float size_x = 0.5f * 0.3f* scale;
+    float size_y = 0.5f* 0.01f * scale ;   
+    float size_z = 0.5f * 0.1f * scale;
+
+    // float init_x = -0.5f* 0.1f * scale ;  
+    // float init_y = -0.5f* 0.1f * scale ;  
+    float init_x = -0.1;
+    float init_y= 0.45;
+  
+    objectPoints.at<float>(0, 0) = init_x; objectPoints.at<float>(0, 1) = init_y; objectPoints.at<float>(0, 2) = 0;
+    objectPoints.at<float>(1, 0) = size_x; objectPoints.at<float>(1, 1) = init_y; objectPoints.at<float>(1, 2) = 0;
+    objectPoints.at<float>(2, 0) = size_x; objectPoints.at<float>(2, 1) = -size_y; objectPoints.at<float>(2, 2) = 0;
+    objectPoints.at<float>(3, 0) = init_x; objectPoints.at<float>(3, 1) = -size_y; objectPoints.at<float>(3, 2) = 0;
+
+    objectPoints.at<float>(4, 0) = init_x; objectPoints.at<float>(4, 1) = init_y; objectPoints.at<float>(4, 2) = size_z;
+    objectPoints.at<float>(5, 0) = size_x; objectPoints.at<float>(5, 1) = init_y; objectPoints.at<float>(5, 2) = size_z;
+    objectPoints.at<float>(6, 0) = size_x; objectPoints.at<float>(6, 1) = -size_y; objectPoints.at<float>(6, 2) = size_z;
+    objectPoints.at<float>(7, 0) = init_x; objectPoints.at<float>(7, 1) = -size_y; objectPoints.at<float>(7, 2) = size_z;
+
+  // This is the box around the first marker used as refernce for all to move to
+  // cv::Mat inner_boxMatrix_markerLink = cv::Mat::eye(4,4, CV_32F);
+  // cv::Mat outer_boxMatrix_markerLink = cv::Mat::eye(4,4, CV_32F);
+  cv::Mat boxMatrix_markerLink(8,4, CV_32F);
+
+  // inner_boxMatrix_markerLink.at<float>(0,3) = objectPoints.at<float>(0,0);
+  // inner_boxMatrix_markerLink.at<float>(1, 3) = objectPoints.at<float>(0, 1); 
+
+  // outer_boxMatrix_markerLink.at<float>(0,3) = objectPoints.at<float>(4,0);
+  // outer_boxMatrix_markerLink.at<float>(1, 3) = objectPoints.at<float>(4, 1); 
+  // outer_boxMatrix_markerLink.at<float>(2, 3) = objectPoints.at<float>(4, 2);
+  objectPoints.copyTo(boxMatrix_markerLink(cv::Range(0, 8), cv::Range(0, 3)));
+  boxMatrix_markerLink.col(3).setTo(cv::Scalar(1.0));
+  cv::Mat box_matrixMarker_transposed = boxMatrix_markerLink.t();
+
+  // ROS_INFO("rows are %d and columns are %d", box_matrixMarker_transposed.rows, box_matrixMarker_transposed.cols);
+  // for(int i = 0; i < box_matrixMarker_transposed.rows; ++i) {
+  //   for (int j = 0; j < box_matrixMarker_transposed.cols; ++j) {
+  //     ROS_INFO("box intial Matrix(%d,%d) = %f", i, j, box_matrixMarker_transposed.at<float>(i,j));
+  //   }
+  // }
+  
+
+  // objectPoints(cv::Rect(0,4,3,4)).copyTo(outer_boxMatrix_markerLink(cv::Rect(0,0,3,4))); //.rowRange(0, 4).colRange(0, 3); // 4 rows 3 columns
+  // outer_boxMatrix_markerLink.col(3).rowRange(0, 4) = 1.0f;  // Making it a homogennous matrix
+
+
+  // This is the box around the first marker used as refernce for all to move to
+  cv::Mat box_init_marker_baseLink(4,8, CV_32F);
+  cv::Mat marker2_BaseLink_inverse;
+  // cv::Mat outer_box_init_marker_baseLink(4,4, CV_32F);
+  if (!marker1_BaseLink_matrix.empty() && !marker2_BaseLink_matrix.empty()){
+      if (cv::invert(marker2_BaseLink_matrix, marker2_BaseLink_inverse, cv::DECOMP_SVD)) {
+        // Perform matrix multiplication
+        box_init_marker_baseLink = marker2_BaseLink_inverse * marker1_BaseLink_matrix * box_matrixMarker_transposed;
+      }
+      else{
+        ROS_INFO("Unable to compute inversion and multiplication");
+      }
+  
+
+  // Transpose the matrix
+  cv::Mat box_init_marker_baseLink_transposed = box_init_marker_baseLink.t();
+  // Remove the last column to make it 8x3
+  cubepoints = box_init_marker_baseLink_transposed(cv::Range::all(), cv::Range(0, 3));
+
+  // Round values to 2 decimal places
+  for (int i = 0; i < cubepoints.rows; ++i) {
+    for (int j = 0; j < cubepoints.cols; ++j) {
+        float& value = cubepoints.at<float>(i, j);
+        value = std::round(value * 100) / 100.0f;
+    }
+  }
+
+  // for(int i = 0; i < cubepoints.rows; ++i) {
+  //   for (int j = 0; j < cubepoints.cols; ++j) {
+  //     ROS_INFO("box intial Matrix(%d,%d) = %f", i, j, cubepoints.at<float>(i,j));
+      
+  //   }
+  // }
+  computed_cube_points = true;
+  } 
+  return cubepoints;
+}
+
+
+
+
+void draw3dCube_scaled(cv::Mat& Image, cv::Mat& cubepoints, const cv::Mat& Rvec, const cv::Mat& Tvec, const aruco::CameraParameters& CP, int lineSize, bool setYperpendicular, double scale)
  {
-   cv::Mat objectPoints(8, 3, CV_32FC1);
-   float halfSize = 0.05f * 0.5f * scale ;
+   cv::Mat objectPoints(8, 3, CV_32F);
+   cv::Mat cubePoints(8,3,CV_32F);
+  //  float halfSize = 0.05f * 0.5f * scale ;
   
-   if (setYperpendicular)
-   {
-     objectPoints.at<float>(0, 0) = -halfSize;
-     objectPoints.at<float>(0, 1) = 0;
-     objectPoints.at<float>(0, 2) = -halfSize;
-     objectPoints.at<float>(1, 0) = halfSize;
-     objectPoints.at<float>(1, 1) = 0;
-     objectPoints.at<float>(1, 2) = -halfSize;
-     objectPoints.at<float>(2, 0) = halfSize;
-     objectPoints.at<float>(2, 1) = 0;
-     objectPoints.at<float>(2, 2) = halfSize;
-     objectPoints.at<float>(3, 0) = -halfSize;
-     objectPoints.at<float>(3, 1) = 0;
-     objectPoints.at<float>(3, 2) = halfSize;
+    // Box in marker frame
+    float size_x = 0.5f * 0.4f* scale;
+    float size_y = 0.5f* 0.05f * scale ;   
+    float size_z = 0.5f * 0.1f * scale;
+
+    // float init_x = -0.5f* 0.1f * scale ;  
+    // float init_y = -0.5f* 0.1f * scale ;  
+    float init_x = -0.1;
+    float init_y= 0.4;
   
-     objectPoints.at<float>(4, 0) = -halfSize;
-     objectPoints.at<float>(4, 1) = 0.05f * scale;
-     objectPoints.at<float>(4, 2) = -halfSize;
-     objectPoints.at<float>(5, 0) = halfSize;
-     objectPoints.at<float>(5, 1) =  0.05f * scale;
-     objectPoints.at<float>(5, 2) = -halfSize;
-     objectPoints.at<float>(6, 0) = halfSize;
-     objectPoints.at<float>(6, 1) =  0.05f * scale;
-     objectPoints.at<float>(6, 2) = halfSize;
-     objectPoints.at<float>(7, 0) = -halfSize;
-     objectPoints.at<float>(7, 1) =  0.05f * scale;
-     objectPoints.at<float>(7, 2) = halfSize;
-   }
-   else
-   {
-     objectPoints.at<float>(0, 0) = -halfSize;
-     objectPoints.at<float>(0, 1) = -halfSize;
-     objectPoints.at<float>(0, 2) = 0;
-     objectPoints.at<float>(1, 0) = halfSize;
-     objectPoints.at<float>(1, 1) = -halfSize;
-     objectPoints.at<float>(1, 2) = 0;
-     objectPoints.at<float>(2, 0) = halfSize;
-     objectPoints.at<float>(2, 1) = halfSize;
-     objectPoints.at<float>(2, 2) = 0;
-     objectPoints.at<float>(3, 0) = -halfSize;
-     objectPoints.at<float>(3, 1) = halfSize;
-     objectPoints.at<float>(3, 2) = 0;
-  
-     objectPoints.at<float>(4, 0) = -halfSize;
-     objectPoints.at<float>(4, 1) = -halfSize;
-     objectPoints.at<float>(4, 2) =  0.05f * scale;
-     objectPoints.at<float>(5, 0) = halfSize;
-     objectPoints.at<float>(5, 1) = -halfSize;
-     objectPoints.at<float>(5, 2) =  0.05f * scale;
-     objectPoints.at<float>(6, 0) = halfSize;
-     objectPoints.at<float>(6, 1) = halfSize;
-     objectPoints.at<float>(6, 2) =  0.05f * scale;
-     objectPoints.at<float>(7, 0) = -halfSize;
-     objectPoints.at<float>(7, 1) = halfSize;
-     objectPoints.at<float>(7, 2) =  0.05f *scale;
-   }
+    objectPoints.at<float>(0, 0) = init_x; objectPoints.at<float>(0, 1) = init_y; objectPoints.at<float>(0, 2) = 0;
+    objectPoints.at<float>(1, 0) = size_x; objectPoints.at<float>(1, 1) = init_y; objectPoints.at<float>(1, 2) = 0;
+    objectPoints.at<float>(2, 0) = size_x; objectPoints.at<float>(2, 1) = -size_y; objectPoints.at<float>(2, 2) = 0;
+    objectPoints.at<float>(3, 0) = init_x; objectPoints.at<float>(3, 1) = -size_y; objectPoints.at<float>(3, 2) = 0;
+
+    objectPoints.at<float>(4, 0) = init_x; objectPoints.at<float>(4, 1) = init_y; objectPoints.at<float>(4, 2) = size_z;
+    objectPoints.at<float>(5, 0) = size_x; objectPoints.at<float>(5, 1) = init_y; objectPoints.at<float>(5, 2) = size_z;
+    objectPoints.at<float>(6, 0) = size_x; objectPoints.at<float>(6, 1) = -size_y; objectPoints.at<float>(6, 2) = size_z;
+    objectPoints.at<float>(7, 0) = init_x; objectPoints.at<float>(7, 1) = -size_y; objectPoints.at<float>(7, 2) = size_z;
+    
 
    // Transform the object points using the transformation matrix
     // for (int i = 0; i < objectPoints.rows; ++i)
@@ -304,11 +401,23 @@ void draw3dCube_scaled(cv::Mat& Image,  const cv::Mat& Rvec, const cv::Mat& Tvec
     //     objectPoints.at<float>(i, 1) = pt_transformed(1);
     //     objectPoints.at<float>(i, 2) = pt_transformed(2);
     // }
-  
-   std::vector<Point2f> imagePoints;
+  // std::vector<Point2f> imagePoints;
+  // cv::projectPoints(objectPoints, Rvec, Tvec, CP.CameraMatrix, CP.Distorsion, imagePoints);
+  std::vector<Point2f> imagePoints;
+  if (computed_cube_points){
+    ROS_INFO("In cubepoints");
+    for(int i = 0; i < cubepoints.rows; ++i) {
+    for (int j = 0; j < cubepoints.cols; ++j) {
+      cubePoints.at<float>(i,j) = cubepoints.at<float>(i,j);
+    }
+  }
+    cv::projectPoints(cubePoints, Rvec, Tvec, CP.CameraMatrix, CP.Distorsion, imagePoints);
+  }
+  else{
    cv::projectPoints(objectPoints, Rvec, Tvec, CP.CameraMatrix, CP.Distorsion, imagePoints);
+  }
    // draw lines of different colours
-   ROS_INFO("Length of imagePoints is %d", imagePoints.size());
+  //  ROS_INFO("Length of imagePoints is %d", imagePoints.size());
    for (int i = 0; i < 4; i++)
    {
     cv::line(Image, imagePoints[i], imagePoints[(i + 1) % 4], cv::Scalar(0, 0, 255, 255), lineSize);
@@ -519,6 +628,8 @@ void image_callback(const sensor_msgs::ImageConstPtr& msg)
         // Eigen::Matrix4f transform_matrix = getTransformMatrix(source_frame, target_frame);
 
         Eigen::Matrix4f transform_matrix;
+        Eigen::Matrix4f transformed_baseLink_matrix;
+        
 
           // std::lock_guard<std::mutex> lock(transform_mutex);
           if (!transform_cached)
@@ -530,28 +641,132 @@ void image_callback(const sensor_msgs::ImageConstPtr& msg)
             // Only after this the blue grid is being visualised well
             if (got_error)
             {
+            transform_matrix = getTransformMatrix(source_frame, target_frame);
             cached_transform_matrix = transform_matrix;
             transform_cached = true;
+            prev_marker_id = markers[0].id;
+            ROS_INFO("Prev marker ID is %d", prev_marker_id);
+             for(int i = 0; i < cached_transform_matrix.rows(); ++i) {
+                for (int j = 0; j < cached_transform_matrix.cols(); ++j) {
+                  ROS_INFO("Cached transform Matrix(%d,%d) = %f", i, j, cached_transform_matrix(i,j));
+                  
+                }
+              }
             }
           }
           else
           {
             transform_matrix = cached_transform_matrix;
-          }
-        
+            correct_transform = true;
+            if (transform_matrix(0,0) == 0.0f){ correct_transform = false;}
+            for(int i = 0; i < transform_matrix.rows(); ++i) {
+                for (int j = 0; j < transform_matrix.cols(); ++j) {
+                  ROS_INFO("transform Matrix(%d,%d) = %f", i, j, transform_matrix(i,j));
+                  
+                }
+              }
+            std::vector<int> visible_markers; 
+            visible_markers.clear();
+            for (unsigned int i = 0; i < markers.size(); ++i)
+            {
+              visible_markers.push_back(markers[i].id);
+            }
 
-        // std::vector<std::thread> threads;
+            for (unsigned int i = 0; i < markers.size(); ++i)
+            {
+                // threads.emplace_back([&, i]() {
+              cv::Mat transformed_Rvec, transformed_Tvec;
+            
+              // if(std::find(visible_markers.begin(), visible_markers.end(), prev_marker_id) != visible_markers.end()) {
+              //     /* No new markers*/
+              //     }
+              // else {
+              //     transform_cached = false;
+              //     got_error = false;
+              //     correct_transform = false;
+              //     got_new_marker = true;
+              //     ROS_INFO("New marker is %d", markers[0].id);
+              // }
+              auto it = std::find(all_markers.begin(), all_markers.end(), markers[0].id);
+              auto prev_marker_visible = std::find(visible_markers.begin(), visible_markers.end(), prev_marker_id);
+              // Check if the detected marker is valid and if it different from previous marker. Also vreify that previous marker is not currently visible
+              if (it != all_markers.end() && markers[0].id != prev_marker_id && prev_marker_visible == visible_markers.end()){
+                transform_cached = false;
+                got_error = false;
+                correct_transform = false;
+                got_new_marker = true;
+                ROS_INFO("New marker is %d", markers[0].id);
+              }
 
-        for (unsigned int i = 0; i < markers.size(); ++i)
-        {
-            // threads.emplace_back([&, i]() {
-          cv::Mat transformed_Rvec, transformed_Tvec;
-          transformPoseToBaseLink(markers[i].Rvec, markers[i].Tvec, transform_matrix, transformed_Rvec, transformed_Tvec);
+              // if (correct_transform){
+              // transformed_baseLink_matrix = transformPoseToBaseLink(markers[0].Rvec, markers[0].Tvec, transform_matrix, transformed_Rvec, transformed_Tvec);
+              
+              // }
+              // The translation and rotation matrices of the first marker wrt base_link (ideally marker placed closest to base of robot)
+              if (correct_transform && !got_TR_inital_marker){
+                ROS_INFO("Saved intial marker translation and rotation");
+                // initial_Tvec = transformed_Tvec;
+                // initial_Rvec = transformed_Rvec;
+                // Eigen::Matrix3f transformed_R = transformed_pose.block<3, 3>(0, 0);
+                Eigen::Matrix4f eigen_marker1_BaseLink_matrix;
+                eigen_marker1_BaseLink_matrix = transformPoseToBaseLink(markers[0].Rvec, markers[0].Tvec, transform_matrix);
+                // Copy the data from the Eigen matrix to the cv::Mat
+                cv::eigen2cv(eigen_marker1_BaseLink_matrix, marker1_BaseLink_matrix);
+                for (int i = 0; i < 4; ++i) {
+                    for (int j = 0; j < 4; ++j) {
+                        ROS_INFO("After conversion to cv matrix(%d,%d) = %f", i, j,marker1_BaseLink_matrix.at<float>(i, j));
+                    }
+                }
 
-          draw3dCube_scaled(inImage, transformed_Rvec, transformed_Tvec, camParam, 2, false, 6);
-            // });
+                // Extract R and T from the transformed pose
+                Eigen::Matrix3f transformed_Ro = eigen_marker1_BaseLink_matrix.block<3, 3>(0, 0);
+                Eigen::Vector3f transformed_To = eigen_marker1_BaseLink_matrix.block<3, 1>(0, 3);
+                cv::Mat temp_RVec;
+                cv::eigen2cv(transformed_Ro, temp_RVec);
+                cv::Rodrigues(temp_RVec, initial_Rvec);
+                cv::eigen2cv(transformed_To, initial_Tvec);
+                // ROS_INFO("Before drawing");
+                // marker1_BaseLink_matrix = get_baseLinkMatrix(initial_Rvec, initial_Tvec);
+                
+                
+                // for(int i = 0; i < initial_marker_matrix.rows; ++i) {
+                //     for(int j = 0; j < initial_marker_matrix.cols; ++j) {
+                //         ROS_INFO("Initial matrix(%d,%d) = %f", i, j, initial_marker_matrix.at<float>(i,j));
+                //     }
+                // }
+                // draw3dCube_scaled(inImage, cubepoints, initial_Rvec, initial_Tvec, camParam, 2, false, scale);
+                // ROS_INFO("Finsihed drwaing once");
+                got_TR_inital_marker = true;
+              }
+              
+              else if (correct_transform && got_new_marker)
+              {
+                ROS_INFO("Got second matrix as well");
+                Eigen::Matrix4f eigen_marker2_BaseLink_matrix;
+                eigen_marker2_BaseLink_matrix = transformPoseToBaseLink(markers[0].Rvec, markers[0].Tvec, transform_matrix);
+                // marker2_BaseLink_matrix = get_baseLinkMatrix(transformed_Rvec, transformed_Tvec);
+                eigen2cv(eigen_marker2_BaseLink_matrix, marker2_BaseLink_matrix);
+                got_new_marker = false;
+              }
+
+              // if (correct_transform){
+                cubepoints = calculate_transfoms(scale);
+              // Extract R and T from the transformed pose
+                // Eigen::Matrix4f inverse_transform_matrix = transform_matrix.inverse();
+                // Eigen::Matrix4f eigen_marker_BaseLink_matrix;
+                // eigen_marker_BaseLink_matrix = transformPoseToBaseLink(markers[0].Rvec, markers[0].Tvec, transform_matrix);
+                
+                // Eigen::Matrix3f transformed_eigen_R = eigen_marker_BaseLink_matrix.block<3, 3>(0, 0);
+                // Eigen::Vector3f transformed_eigen_T = eigen_marker_BaseLink_matrix.block<3, 1>(0, 3);
+                // cv::Mat temp_R;
+                // cv::eigen2cv(transformed_eigen_R, temp_R);
+                // cv::Rodrigues(temp_R, transformed_Rvec);
+                // cv::eigen2cv(transformed_eigen_T, transformed_Tvec);
+                draw3dCube_scaled(inImage, cubepoints, markers[0].Rvec, markers[0].Tvec, camParam, 2, false, scale);
+              // }
+                // });
+            }
         }
-        // }
         // for (auto& t : threads)
         // {
         //     t.join();
