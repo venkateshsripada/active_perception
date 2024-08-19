@@ -35,6 +35,7 @@
  */
 
 #include <iostream>
+#include <unordered_map>
 using namespace std;
 #include <aruco/aruco.h>
 #include <aruco/cvdrawingutils.h>
@@ -67,8 +68,10 @@ using namespace std;
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/opencv.hpp>
 #include <Eigen/Core>
-#include <thread>
-#include <mutex>
+
+// #include <thread>
+// #include <mutex>
+#include <moveit_msgs/MoveGroupActionFeedback.h>
 using namespace cv;
 
 cv::Mat inImage;
@@ -119,12 +122,17 @@ bool correct_transform = false;
 bool computed_cube_points = false;
 
 std::array<int, 4> all_markers = {2,8,5,10};
+
 // cv::Mat initial_image;
 // Eigen::Matrix4f transform_matrix;
 // cv::Mat background_image;  // Static image with the fixed grid
 // bool background_image_set = false;  // Flag to check if background image is set
 
+moveit_msgs::MoveGroupActionFeedback move_group_feedback_data;
 
+void move_group_callback(const moveit_msgs::MoveGroupActionFeedback::ConstPtr& msg) {
+    move_group_feedback_data = *msg;
+}
 
 Eigen::Matrix4f transformPoseToBaseLink(const cv::Mat& Rvec, const cv::Mat& Tvec, const Eigen::Matrix4f& transform_matrix){
     // Convert Rvec and Tvec to Eigen
@@ -153,11 +161,11 @@ Eigen::Matrix4f transformPoseToBaseLink(const cv::Mat& Rvec, const cv::Mat& Tvec
     // cv::Rodrigues(transformed_Rmat, transformed_Rvec);
     // cv::eigen2cv(transformed_T, transformed_Tvec);
 
-    // for(int i = 0; i < transformed_pose.rows(); ++i) {
-    //     for(int j = 0; j < transformed_pose.cols(); ++j) {
-    //         ROS_INFO("Base link matrix(%d,%d) = %f", i, j, transformed_pose(i,j));
-    //     }
-    // }
+    for(int i = 0; i < transformed_pose.rows(); ++i) {
+        for(int j = 0; j < transformed_pose.cols(); ++j) {
+            ROS_INFO("Base link matrix(%d,%d) = %f", i, j, transformed_pose(i,j));
+        }
+    }
 
     return transformed_pose;
 
@@ -215,12 +223,12 @@ Eigen::Matrix4f getTransformMatrix(const std::string& source_frame, const std::s
         // matrix(3, 1) = 0.0f;
         // matrix(3, 2) = 0.0f;
         // matrix(3, 3) = 1.0f;
-        for(int i = 0; i < matrix.rows(); ++i) {
-          for (int j = 0; j < matrix.cols(); ++j) {
-            ROS_INFO("Transform Matrix in function(%d,%d) = %f", i, j, matrix(i,j));
+        // for(int i = 0; i < matrix.rows(); ++i) {
+        //   for (int j = 0; j < matrix.cols(); ++j) {
+        //     ROS_INFO("Transform Matrix in function(%d,%d) = %f", i, j, matrix(i,j));
             
-          }
-        }
+        //   }
+        // }
 
         
 
@@ -269,22 +277,20 @@ cv::Mat get_baseLinkMatrix(cv::Mat& Rvec, cv::Mat& Tvec){
 
 }
 
-void get_intial_RotTr(){
-  // Converts 4x4 matrix to rotation and translation matrices
-}
+
 
 cv::Mat calculate_transfoms(int& scale){
     cv::Mat objectPoints(8,3, CV_32F);
   
     // Box in marker frame
     float size_x = 0.5f * 0.3f* scale;
-    float size_y = 0.5f* 0.01f * scale ;   
+    float size_y = 0.5f* 0.02f * scale ;   
     float size_z = 0.5f * 0.1f * scale;
 
     // float init_x = -0.5f* 0.1f * scale ;  
     // float init_y = -0.5f* 0.1f * scale ;  
     float init_x = -0.1;
-    float init_y= 0.45;
+    float init_y= 0.6;
   
     objectPoints.at<float>(0, 0) = init_x; objectPoints.at<float>(0, 1) = init_y; objectPoints.at<float>(0, 2) = 0;
     objectPoints.at<float>(1, 0) = size_x; objectPoints.at<float>(1, 1) = init_y; objectPoints.at<float>(1, 2) = 0;
@@ -371,14 +377,14 @@ void draw3dCube_scaled(cv::Mat& Image, cv::Mat& cubepoints, const cv::Mat& Rvec,
   //  float halfSize = 0.05f * 0.5f * scale ;
   
     // Box in marker frame
-    float size_x = 0.5f * 0.4f* scale;
-    float size_y = 0.5f* 0.05f * scale ;   
+    float size_x = 0.5f * 0.3f* scale;
+    float size_y = 0.5f* 0.02f * scale ;   
     float size_z = 0.5f * 0.1f * scale;
 
     // float init_x = -0.5f* 0.1f * scale ;  
     // float init_y = -0.5f* 0.1f * scale ;  
     float init_x = -0.1;
-    float init_y= 0.4;
+    float init_y= 0.6;
   
     objectPoints.at<float>(0, 0) = init_x; objectPoints.at<float>(0, 1) = init_y; objectPoints.at<float>(0, 2) = 0;
     objectPoints.at<float>(1, 0) = size_x; objectPoints.at<float>(1, 1) = init_y; objectPoints.at<float>(1, 2) = 0;
@@ -405,7 +411,7 @@ void draw3dCube_scaled(cv::Mat& Image, cv::Mat& cubepoints, const cv::Mat& Rvec,
   // cv::projectPoints(objectPoints, Rvec, Tvec, CP.CameraMatrix, CP.Distorsion, imagePoints);
   std::vector<Point2f> imagePoints;
   if (computed_cube_points){
-    ROS_INFO("In cubepoints");
+    // ROS_INFO("In cubepoints");
     for(int i = 0; i < cubepoints.rows; ++i) {
     for (int j = 0; j < cubepoints.cols; ++j) {
       cubePoints.at<float>(i,j) = cubepoints.at<float>(i,j);
@@ -620,51 +626,58 @@ void image_callback(const sensor_msgs::ImageConstPtr& msg)
       
 
       // draw a 3D cube in each marker if there is 3D info
+      // For active perception, there is the dd
       if (camParam.isValid() && marker_size != -1)
       {
         
-        // Call the function to get the transformation matrix
-        // Works. Fixing grid to base_link independent of camera views
-        // Eigen::Matrix4f transform_matrix = getTransformMatrix(source_frame, target_frame);
-
+        
         Eigen::Matrix4f transform_matrix;
         Eigen::Matrix4f transformed_baseLink_matrix;
+        const float epsilon = 1e-5f;
         
 
           // std::lock_guard<std::mutex> lock(transform_mutex);
           if (!transform_cached)
           {
-            transform_matrix = getTransformMatrix(source_frame, target_frame);
-            // For some reason only if there is an error in the getTransformMatrix that says 
-            // "Could not find a connection between 'base_link' and 'camera_color_optical_frame' because they are not part of the same tree.
-            // Tf has two or more unconnected trees" 
-            // Only after this the blue grid is being visualised well
-            if (got_error)
-            {
-            transform_matrix = getTransformMatrix(source_frame, target_frame);
-            cached_transform_matrix = transform_matrix;
-            transform_cached = true;
-            prev_marker_id = markers[0].id;
-            ROS_INFO("Prev marker ID is %d", prev_marker_id);
-             for(int i = 0; i < cached_transform_matrix.rows(); ++i) {
-                for (int j = 0; j < cached_transform_matrix.cols(); ++j) {
-                  ROS_INFO("Cached transform Matrix(%d,%d) = %f", i, j, cached_transform_matrix(i,j));
-                  
+            // if (move_group_feedback_data.feedback.state == "IDLE"){
+            //     ROS_INFO("Data is correct");
+
+                transform_matrix = getTransformMatrix(source_frame, target_frame);
+                // For some reason only if there is an error in the getTransformMatrix that says 
+                // "Could not find a connection between 'base_link' and 'camera_color_optical_frame' because they are not part of the same tree.
+                // Tf has two or more unconnected trees" 
+                // Only after this the blue grid is being visualised well
+                if (got_error)
+                {
+                transform_matrix = getTransformMatrix(source_frame, target_frame);
+                cached_transform_matrix = transform_matrix;
+                transform_cached = true;
+                prev_marker_id = markers[0].id;
+                ROS_INFO("Prev marker ID is %d", prev_marker_id);
+                for(int i = 0; i < cached_transform_matrix.rows(); ++i) {
+                    for (int j = 0; j < cached_transform_matrix.cols(); ++j) {
+                      ROS_INFO("Cached transform Matrix(%d,%d) = %f", i, j, cached_transform_matrix(i,j));
+                      
+                    }
+                  }
                 }
-              }
-            }
+            // }
           }
           else
           {
+            
             transform_matrix = cached_transform_matrix;
             correct_transform = true;
-            if (transform_matrix(0,0) == 0.0f){ correct_transform = false;}
-            for(int i = 0; i < transform_matrix.rows(); ++i) {
-                for (int j = 0; j < transform_matrix.cols(); ++j) {
-                  ROS_INFO("transform Matrix(%d,%d) = %f", i, j, transform_matrix(i,j));
-                  
-                }
-              }
+            if (std::abs(transform_matrix(0,1) - 0.0f) < epsilon)
+            { transform_cached = false;
+              correct_transform = false;
+              // for(int i = 0; i < transform_matrix.rows(); ++i) {
+              //     for (int j = 0; j < transform_matrix.cols(); ++j) {
+              //       ROS_INFO("transform Matrix(%d,%d) = %f", i, j, transform_matrix(i,j));
+                    
+              //     }
+              // }
+            }
             std::vector<int> visible_markers; 
             visible_markers.clear();
             for (unsigned int i = 0; i < markers.size(); ++i)
@@ -712,11 +725,11 @@ void image_callback(const sensor_msgs::ImageConstPtr& msg)
                 eigen_marker1_BaseLink_matrix = transformPoseToBaseLink(markers[0].Rvec, markers[0].Tvec, transform_matrix);
                 // Copy the data from the Eigen matrix to the cv::Mat
                 cv::eigen2cv(eigen_marker1_BaseLink_matrix, marker1_BaseLink_matrix);
-                for (int i = 0; i < 4; ++i) {
-                    for (int j = 0; j < 4; ++j) {
-                        ROS_INFO("After conversion to cv matrix(%d,%d) = %f", i, j,marker1_BaseLink_matrix.at<float>(i, j));
-                    }
-                }
+                // for (int i = 0; i < 4; ++i) {
+                //     for (int j = 0; j < 4; ++j) {
+                //         ROS_INFO("After conversion to cv matrix(%d,%d) = %f", i, j,marker1_BaseLink_matrix.at<float>(i, j));
+                //     }
+                // }
 
                 // Extract R and T from the transformed pose
                 Eigen::Matrix3f transformed_Ro = eigen_marker1_BaseLink_matrix.block<3, 3>(0, 0);
@@ -749,36 +762,12 @@ void image_callback(const sensor_msgs::ImageConstPtr& msg)
                 got_new_marker = false;
               }
 
-              // if (correct_transform){
+              if (correct_transform){
                 cubepoints = calculate_transfoms(scale);
-              // Extract R and T from the transformed pose
-                // Eigen::Matrix4f inverse_transform_matrix = transform_matrix.inverse();
-                // Eigen::Matrix4f eigen_marker_BaseLink_matrix;
-                // eigen_marker_BaseLink_matrix = transformPoseToBaseLink(markers[0].Rvec, markers[0].Tvec, transform_matrix);
-                
-                // Eigen::Matrix3f transformed_eigen_R = eigen_marker_BaseLink_matrix.block<3, 3>(0, 0);
-                // Eigen::Vector3f transformed_eigen_T = eigen_marker_BaseLink_matrix.block<3, 1>(0, 3);
-                // cv::Mat temp_R;
-                // cv::eigen2cv(transformed_eigen_R, temp_R);
-                // cv::Rodrigues(temp_R, transformed_Rvec);
-                // cv::eigen2cv(transformed_eigen_T, transformed_Tvec);
                 draw3dCube_scaled(inImage, cubepoints, markers[0].Rvec, markers[0].Tvec, camParam, 2, false, scale);
-              // }
-                // });
+                }
             }
         }
-        // for (auto& t : threads)
-        // {
-        //     t.join();
-        // }
-
-        // Works. Fixing grid to base_link independent of camera views. For loop and the next 3 lines in it
-        // for (unsigned int i = 0; i < markers.size(); ++i)
-        // {
-        //   cv::Mat transformed_Rvec, transformed_Tvec;
-        //   transformPoseToBaseLink(markers[i].Rvec, markers[i].Tvec, transform_matrix, transformed_Rvec, transformed_Tvec);
-        //   draw3dCube_scaled(inImage, transformed_Rvec, transformed_Tvec, camParam, 2, false, 6);
-        // }
       }
 
       if (image_pub.getNumSubscribers() > 0)
@@ -850,6 +839,8 @@ int main(int argc, char **argv)
 
   image_transport::Subscriber image_sub = it.subscribe("/image", 1, &image_callback);
   cam_info_sub = nh.subscribe("/camera_info", 1, &cam_info_callback);
+
+  ros::Subscriber move_group_feedback = nh.subscribe("/move_group/feedback", 1000, move_group_callback);
 
   cam_info_received = false;
   image_pub = it.advertise("result", 1);
