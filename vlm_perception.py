@@ -17,8 +17,12 @@ import moveit_msgs.msg
 # import call_vlm
 import base64
 # from openai import OpenAI
+import tf
+import time
+
 from std_msgs.msg import Float32MultiArray
 from std_msgs.msg import Bool
+from actionlib_msgs.msg import GoalStatusArray
 
 GPT_4okey = 'sk-proj-Qt5Xmbq40CEgfTU0wMVgT3BlbkFJi9JjJ140dihGT0a0LGT8'
 
@@ -32,15 +36,25 @@ class SimpleMoveit():
         self.vertice_pose_y_sub = rospy.Subscriber("/aruco_simple/matrix_y", Float32MultiArray, self.matrix_y_callback)
         self.vertice_pose_z_sub = rospy.Subscriber("/aruco_simple/matrix_z", Float32MultiArray, self.matrix_z_callback)
         self.grid_visualised_sub = rospy.Subscriber("/aruco_simple/Grid_visualised", Bool, self.grid_visual_callback)
+        self.moveit_reached_sub = rospy.Subscriber("/move_group/status", GoalStatusArray, self.moveit_reached_callback)
 
         moveit_commander.roscpp_initialize(sys.argv)
         # rospy.init_node("detect_marker_motion")
         # self.listener = tf.TransformListener()
         self.robot = moveit_commander.RobotCommander()
         self.scene = moveit_commander.PlanningSceneInterface()
-
         group_name = "manipulator"
         self.move_group = moveit_commander.MoveGroupCommander(group_name)
+
+        self.listener = tf.TransformListener()
+
+        self.saved_new_grid = False
+        self.got_vertices_mapping = False
+        self.start_time = None
+
+        self.run_pipeline = True
+
+        self.count = 0
 
     def image_callback(self, data):
         try:
@@ -66,14 +80,48 @@ class SimpleMoveit():
     def grid_visual_callback(self, msg):
         self.grid_visualised = msg
 
-    def get_vertices_pose(self):
+    def moveit_reached_callback(self, msg):
+        self.moveit_reached_msg = msg
+
+    def save_grid_image(self):
         try:
             if (self.grid_visualised.data):
-                print("Grid is visualised ")
+                
+                # Check if the 3D grid has been visible for 3 seconds continuously. 
+                # This check is important as the cube keeps flickering if the marker is not correctly visible
+                if self.start_time is None:
+                    self.start_time = time.time()
+                
+                elif time.time() - self.start_time >= 2:
+                    print("Grid is visualised ")
+                    if not self.got_vertices_mapping:
+                        self.get_vertices_pose()
+                    
+                    pos = str(self.count)
+                    # Save raw image
+                    self.raw_image_name = self.save_image(pos, raw=True, aruco=False)
+                    # Check if grid is formed and save grid image
+                    self.aruco_image_name = self.save_image(pos, raw=False, aruco=True)
+
+                    self.count = self.count + 1
+                    self.saved_new_grid = True
             else:
-                print("No  Grid is visualised ")
+                self.start_time = None
+                                    
         except AttributeError:
-            print("No Grid is visualised ")
+            # print("Grid not visualised")
+            self.start_time = None
+
+    def get_vertices_pose(self):
+        try:
+            self.PoseMatrix_x = np.array(self.matrix_x).reshape(numDots, numDots)
+            self.PoseMatrix_y = np.array(self.matrix_y).reshape(numDots, numDots)
+            self.PoseMatrix_z = np.array(self.matrix_z).reshape(numDots, 1)
+            self.got_vertices_mapping = True
+            # print(self.PoseMatrix_x)
+        except AttributeError:
+            print("Did not get matrix information")
+
             
     
     def print_stuff(self):
@@ -108,167 +156,139 @@ class SimpleMoveit():
         self.move_group.stop()
         self.move_group.clear_pose_targets()
 
+        self.trans, self.rot = self.pose_ee_link()
 
-    def save_image(self, pos):
+
+    def save_image(self, pos, raw=True, aruco=False):
         # Saving the current image after moving to desired position
-        name = "saved_image_{}.jpg" .format(pos)
-        cv2.imwrite("saved_image_{}.jpg" .format(pos), self.cv_image)
-        print("Saving {} to {}".format(name, image_path))
-        return name
+        if raw:
+            name = "saved_image_{}.jpg" .format(pos)
+            cv2.imwrite("/home/ur_5/ur5_ws/saved_images/saved_image_{}.jpg" .format(pos), self.cv_image)
+            print("Saving {} to {}".format(name, image_path))
+            return name
+        elif aruco:
+            name = "grid_image_{}.jpg" .format(pos)
+            cv2.imwrite("/home/ur_5/ur5_ws/saved_images/grid_image_{}.jpg" .format(pos), self.aruco_image)
+            cv2.imwrite("grid_image.jpg", self.aruco_image)
+            print("Saving grid {} to {}".format(name, image_path))
+            return name
 
-    def divide_grids(self, image1_path, grids_x, grids_y):
 
-        image = cv2.imread(image1_path + self.name)    
+    def pose_ee_link(self):
+        # print("Starting transformation")
+        # transformed_marker_pose = self.transform_pose(self.aruco_msg, "camera_color_optical_frame", "base_link")
+        self.listener.waitForTransform("base_link", "tool0",rospy.Time(), rospy.Duration(1.0))
+        (trans, rot) = self.listener.lookupTransform("base_link", "tool0", rospy.Time())
+        # print("Transformed marker pose: ", trans)
+        # print("Rotation is: ", rot)
+        return trans, rot
 
-        total_height = image.shape[0]
-        total_width = image.shape[1]
-
-        annotate_height_start, annotate_height_end, annotate_width_start, annotate_width_end = self.annotate_vals()
-
-        annotate_y = np.linspace(annotate_height_start, annotate_height_end, grids_x)
-        annotate_x = np.linspace(annotate_width_start, annotate_width_end, grids_y)
-
-        # To avoid code breaking in the for loops below, we add a dummy element (0 here) to the array
-        annotate_x = np.append(annotate_x, 0)
-        annotate_y = np.append(annotate_y, 0)
-        print("Will annotate x axis {} without 0".format(annotate_x))
-        print("Will annotate y axis {} without 0".format(annotate_y))
-
-        divide_x = total_width // grids_x
-        divide_y = total_height// grids_y
-
-        print("Total height of image is {} and width is {}".format(total_height, total_width))
-
-        i = 0
-        for y in range(0, total_height, divide_y):
-            j = 0
-            for x in range(0, total_width, divide_x):
-                y1 = y + divide_y
-                x1 = x + divide_x
-
-                # Calculate the center of the current grid cell
-                center_y = y + divide_y // 2
-                center_x = x + divide_x // 2
-                
-                cv2.rectangle(image, (x, y), (x1, y1), color=(0, 255, 0), thickness=4)
-
-                print_annotate_x = round(annotate_x[i], 2)
-                print_annotate_y = round(annotate_y[j], 2)
-                j = j + 1
-
-                text = str("({}, {})".format(print_annotate_y, print_annotate_x))
-
-                text_size = cv2.getTextSize(text, font, font_scale, thickness=4)[0]
-                text_x = center_x - text_size[0] // 2
-                text_y = center_y + text_size[1] // 2
-
-                # Add the text to the image
-                cv2.putText(image, text, (text_x, text_y), font, font_scale, (255, 0, 0), 8)
-            i = i + 1
-        cv2.imwrite("annotated_image_" + self.name, image)
-
-    def generate_3d_grid(self):
-        print("Length of aruco image is {}" .format(self.aruco_vis_image.shape))
-        self.diff_image = self.aruco_vis_image - self.cv_image
-        print("Non zero indices are {}".format(np.nonzero(self.diff_image)))
-        non_zero_indices = np.nonzero(self.diff_image)
-
-        offsets = []
-        for i in range(-1000, 1000, 200):
-            for j in range(-1000, 1000, 200):
-                offsets.append(np.array([i,j,0]))
-
-        # print(offsets)
-        # offsets = [np.array([200,0,0]), np.array([-200, 0, 0]), np.array([-200, -200, 0]), np.array([-200, 200, 0]), np.array([0, -200, 0])]
-        new_image = self.add_non_zero_with_offset(difference_image=self.diff_image, offsets =offsets, overlay_image = self.aruco_vis_image)
-
-        filtered_image = self.filter_yellow(new_image)
-        # print("Non-zero element values are {}".format(self.diff_image[non_zero_x_indices, non_zero_y_indices, non_zero_z_indices]))
-        print("Shape of new_image is {}".format(new_image.shape))
-        cv2.imwrite("raw_image.jpg", self.cv_image)
-        cv2.imwrite("raw_aruco_image.jpg", self.aruco_vis_image)
-        cv2.imwrite("saved_image_difference.jpg", self.diff_image)
-        cv2.imwrite("new.jpg", new_image)
-        cv2.imwrite("filtered_image.jpg", filtered_image)
-   
-    
-    def add_non_zero_with_offset(self, difference_image, offsets, overlay_image):
-        # Find the indices of non-zero elements
-        non_zero_indices = np.nonzero(difference_image)
-
-        # Create a new array of the same shape, initialized with zeros
-        new_image = np.zeros_like(difference_image)
-
-        new_image = self.cv_image.copy()
-        # Assign the non-zero values to the new array at the corresponding positions
-        new_image[non_zero_indices] = difference_image[non_zero_indices]
-
-        # Apply each offset and assign the corresponding values to new_image
-        for offset in offsets:
-            # Create a copy of the non-zero indices
-            copy_indices = np.copy(non_zero_indices)
-            
-            # Add the offset to the copy_indices and ensure they are within bounds
-            for dim in range(3):
-                copy_indices[dim] = np.clip(copy_indices[dim] + offset[dim], 0, difference_image.shape[dim] - 1)
-
-            # Assign the values from the copied indices to the new_image
-            new_image[tuple(copy_indices)] = overlay_image[non_zero_indices]
-
-        return new_image
-
-    def filter_yellow(self, image):
-        # Convert the difference image to the HSV color space
-        hsv_diff_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-
-        # # Define HSV range for the yellow color
-        yellow_lower = np.array([20, 100, 100], np.uint8)
-        yellow_upper = np.array([30, 255, 255], np.uint8)
-
-        yellow_mask = cv2.inRange(hsv_diff_image, yellow_lower, yellow_upper)
-
-        # # Invert the combined mask to get the regions to keep
-        inverse_mask = cv2.bitwise_not(yellow_mask)
-
-        # # Apply the inverse mask to the aruco_image to remove the blue voxelized grid
-        result_image = cv2.bitwise_and(image, image, mask=inverse_mask)
-
-        return result_image
-    
-    def annotate_vals(self):
-        custom_height_start = 0.3
-        custom_height_end = -0.3
-        custom_width_start  = 0.3
-        custom_width_end = 0.7
-
-        return custom_height_start, custom_height_end, custom_width_start, custom_width_end
-    
     def get_vlm_coords(self):
-        with open("/home/ur_5/ur5_ws/gpt_result.txt") as file:
-            arr = file.read()
 
-            coords = arr.split("(") 
-            coords = coords[1]
-            coords_x = coords[0:3]
-            coords_y = coords[5:8]
-            coords_z = coords[10:13]
-        return coords_x,  coords_y, coords_z
+        summary_lines = []
+        with open(result_path, 'r') as file:
+            lines = file.readlines()
 
+            inside_summary = False
+
+            # Loop through each line to find and store the Summary section
+            for line in lines:
+                # Check for the beginning of the "Summary" section
+                if "output" in line.lower():
+                    inside_summary = True
+
+                if inside_summary:
+                    summary_lines.append(line.strip())  # Strip leading/trailing spaces
+            
+
+            # Join the summary lines into a single output line
+            summary = " ".join(summary_lines)
+            arr = summary.split("(")
+
+            for i in range(len(arr)):
+                if not len(arr[i]) == 0:
+                    try:
+                        coords = int(arr[i][0])
+                        coords=  arr[i]
+                        coords_x = coords[0:1]
+                        coords_y = coords[2:3]
+                        coords_z  = coords[4:5]
+
+                        return coords_x, coords_y, coords_z
+                        # print("array value is at i is ", i, coords)
+                    except ValueError:
+                        # print("Passing at i", i)
+                        pass
+        # return "s","s","s"
+            
     
     def AP_full_view(self):
         pose_goal = Pose()
-        pose_goal.orientation.x = -0.009052924476954417
-        pose_goal.orientation.y = 0.992334854485075
-        pose_goal.orientation.z = 0.11973647791802301
-        pose_goal.orientation.w = 0.02920200315537318
-        pose_goal.position.x = -0.09074780727730096
-        pose_goal.position.y = 0.25281975634181075
-        pose_goal.position.z = 0.8138046553615809
+        pose_goal.orientation.x = 0.040209717276491856
+        pose_goal.orientation.y = -0.9967552503108692
+        pose_goal.orientation.z =  -0.0663499022260687
+        pose_goal.orientation.w = -0.021443882317635124
+        pose_goal.position.x = -0.10604477511715267
+        pose_goal.position.y =  0.3252246343845232
+        pose_goal.position.z = 0.7823752459856232
 
         self.move_group.set_pose_target(pose_goal)
         plan = self.move_group.go(wait=True)
         self.move_group.stop()
         self.move_group.clear_pose_targets()
+
+    def moveit_position_loop(self, coords_x, coords_y, coords_z):
+        self.go_to_position(self.PoseMatrix_x[coords_x, coords_y], self.PoseMatrix_y[coords_x, coords_y], self.PoseMatrix_z[coords_z, 0])
+        if self.moveit_reached_msg.status_list[0].status != int(3):
+            self.moveit_position_loop()
+    
+    
+    def pipeline(self):       
+
+        if not self.saved_new_grid:
+            self.save_grid_image() 
+
+        elif self.saved_new_grid and self.count >= 2: 
+            self.count = self.count + 1
+            # GPT-4o callback
+            os.system('python3 /home/ur_5/ur5_ws/src/src/Universal_Robots_ROS_Driver/ur_robot_driver/scripts/call_vlm.py')
+            coord_x, coord_y, coord_z = self.get_vlm_coords()          
+            # self.AP_full_view()     # Manually taking it to new position. TO be done by GPT 
+            
+        
+            if coord_x == "s":
+                print("Stopping")
+                self.run_pipeline = False
+            else:
+                coords_x = int(coord_x)
+                coords_y = int(coord_y)
+                coords_z = int(coord_z)   
+            
+                print("Going to ({},{},{})" .format(coords_x, coords_y, coords_z))
+                print("It corresponds to ", self.PoseMatrix_x[coords_x, coords_y], self.PoseMatrix_y[coords_x, coords_y], self.PoseMatrix_z[coords_z, 0])
+                self.predefined_postions("center")
+                self.moveit_position_loop(coords_x, coords_y, coords_z)
+                # self.go_to_position(self.PoseMatrix_x[coords_x, coords_y], self.PoseMatrix_y[coords_x, coords_y], self.PoseMatrix_z[coords_z, 0])
+                
+                transl, rot = self.pose_ee_link()
+                print("Currently at", transl)
+                print("----------------------------------------")
+            
+                curr_trans, curr_rot = self.pose_ee_link()
+                self.saved_new_grid = False
+                self.start_time = None
+        
+        else:
+            self.AP_full_view()
+            self.saved_new_grid = False
+            self.start_time = None
+        # if abs(curr_trans[0] - self.trans[0]) > 1e-3: 
+        #     print("Robot moved!")
+        # else:
+        #     self.run_pipeline = False
+        
+
+
     
     def predefined_postions(self, pos):
         # Checked by Venkatesh
@@ -282,7 +302,7 @@ class SimpleMoveit():
         elif pos == "top_left":
             self.go_to_position(0.3, 0.3, 0.4)
         elif pos == "top_right":
-            self.go_to_position(-0.3, 0.3, 0.4)
+            self.go_to_position(-0.3, 0.3, 0.5)
         elif pos == "full_view":
             self.go_to_position(0.01, 0.45, 0.7)
         elif pos == "custom":
@@ -292,19 +312,26 @@ class SimpleMoveit():
             self.go_to_position(position_x, position_y, position_z)
 
         # self.print_stuff()
-        self.name = self.save_image(pos)
-        self.divide_grids(image_path, 3, 3)
+        # self.name = self.save_image(pos)
+        # self.divide_grids(image_path, 3, 3)
 
         # GPT-4o callback
-        os.system('python3 /home/ur_5/ur5_ws/src/src/Universal_Robots_ROS_Driver/ur_robot_driver/scripts/call_vlm.py')
-        coord_x, coord_y, coord_z = self.get_vlm_coords()
-        coord_x = float(coord_x)
-        coord_y = float(coord_y)
-        coord_z = float(coord_z)
+        # os.system('python3 /home/ur_5/ur5_ws/src/src/Universal_Robots_ROS_Driver/ur_robot_driver/scripts/call_vlm.py')
+        # coord_x, coord_y, coord_z = self.get_vlm_coords()
+        # coord_x = float(coord_x)
+        # coord_y = float(coord_y)
+        # coord_z = float(coord_z)
 
-        if coord_x == 0.0:
-            coord_x = 0.01
-        self.go_to_position(coord_x, coord_y, coord_z)
+        # if coord_x == 0.0:
+        #     coord_x = 0.01
+        # self.go_to_position(coord_x, coord_y, coord_z)
+
+    def control_loop(self):
+        while not rospy.is_shutdown():
+            if self.run_pipeline:
+                self.pipeline()  
+            else:
+                break
 
 
 def main():
@@ -312,20 +339,19 @@ def main():
 
     sm = SimpleMoveit()
     # divide_grids(image_path, 3,3)
-    while not rospy.is_shutdown():
-        
-        # sm.predefined_postions("bottom_right")
-        
-        sm.get_vertices_pose()
+    sm.predefined_postions("top_right")   # Go to marker near base of robot
+    sm.control_loop()
+    
+    
 
 if __name__ == "__main__":
     # while not rospy.is_shutdown():
     # detect = DetectToMotion()
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 2
-    custom_values = True
 
+    numDots = 4
+    trial = 5
     image_path = "/home/ur_5/ur5_ws/"
+    result_path = "/home/ur_5/Documents/gpt_tests/Test_29_8_4/gpt_result_{}.txt".format(trial)
     
     
     model = "gpt-4o"
