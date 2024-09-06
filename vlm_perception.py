@@ -2,6 +2,7 @@
 
 import os
 import sys
+import pdb
 import rospy
 import numpy as np
 from geometry_msgs.msg import Pose, PoseStamped
@@ -38,6 +39,8 @@ class SimpleMoveit():
         self.grid_visualised_sub = rospy.Subscriber("/aruco_simple/Grid_visualised", Bool, self.grid_visual_callback)
         self.moveit_reached_sub = rospy.Subscriber("/move_group/status", GoalStatusArray, self.moveit_reached_callback)
 
+        self.velocity_scale = 0.15
+        
         moveit_commander.roscpp_initialize(sys.argv)
         # rospy.init_node("detect_marker_motion")
         # self.listener = tf.TransformListener()
@@ -45,6 +48,8 @@ class SimpleMoveit():
         self.scene = moveit_commander.PlanningSceneInterface()
         group_name = "manipulator"
         self.move_group = moveit_commander.MoveGroupCommander(group_name)
+
+        self.move_group.set_max_velocity_scaling_factor(self.velocity_scale)
 
         self.listener = tf.TransformListener()
 
@@ -55,6 +60,7 @@ class SimpleMoveit():
         self.run_pipeline = True
 
         self.count = 0
+        self.angle = 35
 
     def image_callback(self, data):
         try:
@@ -87,7 +93,7 @@ class SimpleMoveit():
         try:
             if (self.grid_visualised.data):
                 
-                # Check if the 3D grid has been visible for 3 seconds continuously. 
+                # Check if the 3D grid has been visible for 2 seconds continuously. 
                 # This check is important as the cube keeps flickering if the marker is not correctly visible
                 if self.start_time is None:
                     self.start_time = time.time()
@@ -119,6 +125,13 @@ class SimpleMoveit():
             self.PoseMatrix_z = np.array(self.matrix_z).reshape(numDots, 1)
             self.got_vertices_mapping = True
             # print(self.PoseMatrix_x)
+
+            # for k in range(len(self.PoseMatrix_z)):
+            #     for i in range(len(self.PoseMatrix_x)):
+            #         for j in range(len(self.PoseMatrix_y)):
+            #             print("Going to ({},{}) = ({},{},{})".format(i,j, self.PoseMatrix_x[i,j], self.PoseMatrix_y[i,j], self.PoseMatrix_z[k,0]))
+            #             self.go_to_position(self.PoseMatrix_x[i,j], self.PoseMatrix_y[i,j], self.PoseMatrix_z[k,0])
+            #         self.predefined_postions("center")
         except AttributeError:
             print("Did not get matrix information")
 
@@ -140,7 +153,7 @@ class SimpleMoveit():
         print(robot_state)
         
 
-    def go_to_position(self, x_pos, y_pos, z_pos):
+    def go_to_position(self, x_pos, y_pos, z_pos, orient_x):
 
         pose_goal = Pose()
         pose_goal.orientation.x = -0.023273475657969504
@@ -151,37 +164,72 @@ class SimpleMoveit():
         pose_goal.position.y = y_pos
         pose_goal.position.z = z_pos
 
+        self.listener.waitForTransform("base_link", "tool0",rospy.Time(), rospy.Duration(1.0))
+        (trans, rot) = self.listener.lookupTransform("base_link", "tool0", rospy.Time())
+        print("Currently at", trans)
+        print("----------------------------------------")
+
         self.move_group.set_pose_target(pose_goal)
         plan = self.move_group.go(wait=True)
         self.move_group.stop()
         self.move_group.clear_pose_targets()
 
-        self.trans, self.rot = self.pose_ee_link()
+        euler = tf.transformations.euler_from_quaternion(rot)
+        roll = euler[0]
+        pitch = euler[1]
+        yaw = euler[2]
+        change = (np.pi * self.angle)/180
+        increment = roll - change
+        decrement = roll + change
+
+        if orient_x == 1:
+            quaternion = tf.transformations.quaternion_from_euler(increment, pitch, yaw)
+        elif orient_x == 2:
+            quaternion = tf.transformations.quaternion_from_euler(decrement, pitch, yaw)
+        elif orient_x == 0:
+            return
+
+        pose_goal = Pose()
+        pose_goal.orientation.x = quaternion[0]
+        pose_goal.orientation.y = quaternion[1]
+        pose_goal.orientation.z = quaternion[2]
+        pose_goal.orientation.w = quaternion[3]
+        pose_goal.position.x = x_pos
+        pose_goal.position.y = y_pos
+        pose_goal.position.z = z_pos
+
+        self.move_group.set_pose_target(pose_goal)
+        plan = self.move_group.go(wait=True)
+        self.move_group.stop()
+        self.move_group.clear_pose_targets()
+
 
 
     def save_image(self, pos, raw=True, aruco=False):
         # Saving the current image after moving to desired position
         if raw:
             name = "saved_image_{}.jpg" .format(pos)
-            cv2.imwrite("/home/ur_5/ur5_ws/saved_images/saved_image_{}.jpg" .format(pos), self.cv_image)
-            print("Saving {} to {}".format(name, image_path))
+            # When count == 1, we get the intial overhead view that goes into context always
+            if self.count == 1 :     
+                cv2.imwrite(image_save_path + "/test_{}/saved_image_overhead.jpg" .format(trial, pos), self.cv_image)
+            else:
+                cv2.imwrite(image_save_path + "/test_{}/saved_image_{}.jpg" .format(trial, pos), self.cv_image)
+            print("Saving {} to {}".format(name, image_save_path))
             return name
+
         elif aruco:
             name = "grid_image_{}.jpg" .format(pos)
-            cv2.imwrite("/home/ur_5/ur5_ws/saved_images/grid_image_{}.jpg" .format(pos), self.aruco_image)
-            cv2.imwrite("grid_image.jpg", self.aruco_image)
-            print("Saving grid {} to {}".format(name, image_path))
+            if self.count == 0:  
+                cv2.imwrite(image_save_path + "/test_{}/grid_image_{}.jpg" .format(trial, pos), self.aruco_image)
+            elif self.count == 1: 
+                cv2.imwrite(image_save_path + "/test_{}/grid_image_overhead.jpg" .format(trial, pos), self.aruco_image)                
+            else:
+                cv2.imwrite(image_save_path + "/test_{}/grid_image_{}.jpg" .format(trial, pos), self.aruco_image)
+                cv2.imwrite(image_save_path + "/test_{}/grid_image.jpg" .format(trial), self.aruco_image)
+            print("Saving grid {} to {}/test_{}".format(name, image_save_path, trial))
             return name
 
 
-    def pose_ee_link(self):
-        # print("Starting transformation")
-        # transformed_marker_pose = self.transform_pose(self.aruco_msg, "camera_color_optical_frame", "base_link")
-        self.listener.waitForTransform("base_link", "tool0",rospy.Time(), rospy.Duration(1.0))
-        (trans, rot) = self.listener.lookupTransform("base_link", "tool0", rospy.Time())
-        # print("Transformed marker pose: ", trans)
-        # print("Rotation is: ", rot)
-        return trans, rot
 
     def get_vlm_coords(self):
 
@@ -210,17 +258,80 @@ class SimpleMoveit():
                     try:
                         coords = int(arr[i][0])
                         coords=  arr[i]
-                        coords_x = coords[0:1]
-                        coords_y = coords[2:3]
-                        coords_z  = coords[4:5]
-
-                        return coords_x, coords_y, coords_z
+                        if coords[1] == ".":
+                            coords_x = coords[0:3]
+                            coords_y = coords[4:7]
+                            if coords[9] == ",":
+                                coords_z = coords[8:9]
+                                roll = coords[10:11]
+                            else:
+                                coords_z = coords[8:11]
+                                roll = coords[12:13]
+                            return float(coords_x), float(coords_y), float(coords_z), int(roll)
+                        else:
+                            coords_x = coords[0:1]
+                            coords_y = coords[2:3]
+                            coords_z  = coords[4:5]
+                            roll = coords[6:7]
+                            return int(coords_x), int(coords_y), int(coords_z), int(roll)
+                        
                         # print("array value is at i is ", i, coords)
                     except ValueError:
                         # print("Passing at i", i)
                         pass
-        # return "s","s","s"
-            
+            # if arr[1][0] == "s":
+            #     print(arr[1])
+            #     print("Stopping. Question answered!")
+            #     self.run_pipeline = False
+
+        
+    def get_init_target_state(self):  
+        summary_lines = []
+        coordinate_pose = []
+
+        with open(result_path, 'r') as file:
+            lines = file.readlines()
+
+            inside_summary = False
+
+                # Loop through each line to find and store the Summary section
+            for line in lines:
+                # Check for the beginning of the "Summary" section
+                if "vertex_x" in line.lower():
+                    inside_summary = True
+
+                if inside_summary:
+                    summary_lines.append(line.strip())  # Strip leading/trailing spaces
+                
+
+            # Join the summary lines into a single output line
+            summary = " ".join(summary_lines)
+            arr = summary.split(":")
+
+            for i in range(len(arr)):
+                if not len(arr[i]) == 0:
+                    try:
+                        coords = int(arr[i][1])
+                        coords=  arr[i]
+                        print(coords)
+                        if coords[2] == ".":
+                            coordinate_pose.append(float(coords[1:4]))
+                        else:
+                            coordinate_pose.append(int(coords[1]))
+                    except ValueError:
+                        pass
+
+        return coordinate_pose[0], coordinate_pose[1], coordinate_pose[2], coordinate_pose[3]
+
+    def write_target_state(self):
+        vertex_x, vertex_y, vertex_z, orientation_x = self.get_init_target_state()
+        with open(target_state_path, "w") as target_pos_file:
+            target_pos_file.write("(" + str(vertex_x) + ", " + str(vertex_y) + ", " + str(vertex_z) + ", " + str(orientation_x) + ")\n")
+
+    def write_current_state(self, coord_x, coord_y, coord_z, orient_x):
+        with open(current_position_path, "w") as current_pos_file:
+            current_pos_file.write("(" + str(coord_x) + ", " + str(coord_y) + ", " + str(coord_z) + ", " + str(orient_x) + ")\n")
+
     
     def AP_full_view(self):
         pose_goal = Pose()
@@ -237,12 +348,55 @@ class SimpleMoveit():
         self.move_group.stop()
         self.move_group.clear_pose_targets()
 
-    def moveit_position_loop(self, coords_x, coords_y, coords_z):
-        self.go_to_position(self.PoseMatrix_x[coords_x, coords_y], self.PoseMatrix_y[coords_x, coords_y], self.PoseMatrix_z[coords_z, 0])
-        if self.moveit_reached_msg.status_list[0].status != int(3):
-            self.moveit_position_loop()
+    def moveit_position_loop(self, coords_x, coords_y, coords_z, orient_x, precise):
+        if precise:
+            self.go_to_position(coords_x, coords_y, self.PoseMatrix_z[coords_z, 0], orient_x)
+            if self.moveit_reached_msg.status_list[0].status != int(3):
+                print("Movegorup stratus: ", self.moveit_reached_msg.status_list[0].status)
+                self.moveit_position_loop(coords_x, coords_y, 1, orient_x, precise)
+        else:
+            self.go_to_position(self.PoseMatrix_x[coords_x, coords_y], self.PoseMatrix_y[coords_x, coords_y], self.PoseMatrix_z[coords_z, 0], orient_x)
+
+            if self.moveit_reached_msg.status_list[0].status != int(3):
+                print("Movegorup stratus: ", self.moveit_reached_msg.status_list[0].status)
+                self.moveit_position_loop(coords_x, coords_y, 1, orient_x, precise)
     
-    
+    def split_pose_matrix(self, split_start, split_end, desired_digit):
+        length = split_end - split_start
+        interval = length / 10  # 10 parts between 2,2 and 2,3. 2nd part will be 2.2
+        val = split_start + desired_digit * interval
+        return val
+        
+    def get_precise(self, coords, x_coord):
+        coords = str(coords)
+
+        if not x_coord:
+            if int(coords[2]) < 5:
+                coord_lower = int(round(float(coords)))
+                coord_upper = coord_lower + 1
+                coord_val = int(coords[0])
+                coords_val = self.split_pose_matrix(self.PoseMatrix_y[coord_val, coord_lower], self.PoseMatrix_y[coord_val, coord_upper], int(coords[2])) # This will be 2,2 amd 2,3
+            elif int(coords[2]) >= 5:
+                coord_upper = int(round(float(coords)))
+                coord_lower = coord_upper - 1
+                coord_val = int(coords[0])
+                coords_val = self.split_pose_matrix(self.PoseMatrix_y[coord_val, coord_lower], self.PoseMatrix_y[coord_val, coord_upper], int(coords[2])) # This will be 2,2 amd 2,3
+        
+        elif x_coord:
+            if int(coords[2]) < 5:
+                coord_lower = int(round(float(coords)))
+                # pdb.set_trace()
+                coord_upper = coord_lower + 1
+                coord_val = int(coords[0])
+                coords_val = self.split_pose_matrix(self.PoseMatrix_x[coord_lower, coord_val], self.PoseMatrix_x[coord_upper, coord_val], int(coords[2])) # This will be 2,2 amd 2,3
+            elif int(coords[2]) >= 5:
+                coord_upper = int(round(float(coords)))
+                coord_lower = coord_upper - 1
+                coord_val = int(coords[0])
+                coords_val = self.split_pose_matrix(self.PoseMatrix_x[coord_lower, coord_val], self.PoseMatrix_x[coord_upper, coord_val], int(coords[2])) # This will be 2,2 amd 2,3
+
+        return coords_val
+
     def pipeline(self):       
 
         if not self.saved_new_grid:
@@ -250,33 +404,58 @@ class SimpleMoveit():
 
         elif self.saved_new_grid and self.count >= 2: 
             self.count = self.count + 1
+            print("Count is: ", self.count)
+
             # GPT-4o callback
             os.system('python3 /home/ur_5/ur5_ws/src/src/Universal_Robots_ROS_Driver/ur_robot_driver/scripts/call_vlm.py')
-            coord_x, coord_y, coord_z = self.get_vlm_coords()          
-            # self.AP_full_view()     # Manually taking it to new position. TO be done by GPT 
+
+            if self.count == 3:
+                self.write_target_state()   # Should get GPT-4o output for analyser prompt
+                coord_x, coord_y, coord_z, orient_x = self.get_init_target_state()
+                
+            if self.count > 3:
+                coord_x, coord_y, coord_z, orient_x = self.get_vlm_coords()
             
-        
-            if coord_x == "s":
+            if type(coord_x) == str:
                 print("Stopping")
                 self.run_pipeline = False
+            elif type(coord_x) == float:
+                precise_coords_x = self.get_precise(coord_x, x_coord=True)
+                precise_coords_y = self.get_precise(coord_y, x_coord=False)
+                coords_z = int(coord_z)
+                orient_x = int(orient_x) 
+
+                if orient_x == 1:
+                    print("Going to ({},{},{}) and looking up" .format(coord_x, coord_y, coord_z))
+                elif orient_x == 2:
+                    print("Going to ({},{},{}) and looking down" .format(coord_x, coord_y, coord_z))
+                elif orient_x == 0:
+                    print("Going to ({},{},{})" .format(coord_x, coord_y, coord_z))
+                print("It corresponds to ", precise_coords_x, precise_coords_y, self.PoseMatrix_z[coords_z, 0])
+                
+                self.predefined_postions("center")
+                self.moveit_position_loop(precise_coords_x, precise_coords_y, coords_z, orient_x, precise=True)
             else:
                 coords_x = int(coord_x)
                 coords_y = int(coord_y)
-                coords_z = int(coord_z)   
+                coords_z = int(coord_z)
+                orient_x = int(orient_x)   
             
-                print("Going to ({},{},{})" .format(coords_x, coords_y, coords_z))
+                if orient_x == 1:
+                    print("Going to ({},{},{}) and looking up" .format(coords_x, coords_y, coords_z))
+                elif orient_x == 2:
+                    print("Going to ({},{},{}) and looking down" .format(coords_x, coords_y, coords_z))
+                elif orient_x == 0:
+                    print("Going to ({},{},{})" .format(coords_x, coords_y, coords_z))
+
                 print("It corresponds to ", self.PoseMatrix_x[coords_x, coords_y], self.PoseMatrix_y[coords_x, coords_y], self.PoseMatrix_z[coords_z, 0])
                 self.predefined_postions("center")
-                self.moveit_position_loop(coords_x, coords_y, coords_z)
-                # self.go_to_position(self.PoseMatrix_x[coords_x, coords_y], self.PoseMatrix_y[coords_x, coords_y], self.PoseMatrix_z[coords_z, 0])
-                
-                transl, rot = self.pose_ee_link()
-                print("Currently at", transl)
-                print("----------------------------------------")
-            
-                curr_trans, curr_rot = self.pose_ee_link()
-                self.saved_new_grid = False
-                self.start_time = None
+                self.moveit_position_loop(coords_x, coords_y, coords_z, orient_x, precise=False)
+            # self.go_to_position(self.PoseMatrix_x[coords_x, coords_y], self.PoseMatrix_y[coords_x, coords_y], self.PoseMatrix_z[coords_z, 0])               
+
+            self.write_current_state(coord_x, coord_y, coord_z, orient_x)
+            self.saved_new_grid = False
+            self.start_time = None
         
         else:
             self.AP_full_view()
@@ -294,17 +473,17 @@ class SimpleMoveit():
         # Checked by Venkatesh
         
         if pos == "bottom_left":
-            self.go_to_position(0.3, 0.7, 0.4)      
+            self.go_to_position(0.3, 0.7, 0.4, 0)      
         elif pos == "bottom_right":
-            self.go_to_position(-0.3, 0.7, 0.4)
+            self.go_to_position(-0.3, 0.7, 0.4, 0)
         elif pos == "center":
-            self.go_to_position(0.01, 0.5, 0.4)
+            self.go_to_position(0.01, 0.5, 0.4, 0)
         elif pos == "top_left":
-            self.go_to_position(0.3, 0.3, 0.4)
+            self.go_to_position(0.3, 0.3, 0.4, 0)
         elif pos == "top_right":
-            self.go_to_position(-0.3, 0.3, 0.5)
+            self.go_to_position(-0.3, 0.3, 0.5, 0)
         elif pos == "full_view":
-            self.go_to_position(0.01, 0.45, 0.7)
+            self.go_to_position(0.01, 0.45, 0.7, 0)
         elif pos == "custom":
             position_x = input("Enter the x position to go to")
             position_y = input("Enter the y position to go to")
@@ -349,9 +528,19 @@ if __name__ == "__main__":
     # detect = DetectToMotion()
 
     numDots = 4
-    trial = 5
-    image_path = "/home/ur_5/ur5_ws/"
-    result_path = "/home/ur_5/Documents/gpt_tests/Test_29_8_4/gpt_result_{}.txt".format(trial)
+    trial = 11
+    # image_path = "/home/ur_5/ur5_ws/"
+    image_save_path = "/home/ur_5/Documents/gpt_tests/Test_5_9_24/dual_prompt"
+    result_path = "/home/ur_5/Documents/gpt_tests/Test_5_9_24/dual_prompt/test_{}/gpt_result_{}.txt".format(trial, trial)
+    
+    current_position_path = "/home/ur_5/Documents/gpt_tests/Test_5_9_24/dual_prompt/test_{}/current_position_{}.txt".format(trial, trial)
+    target_state_path = "/home/ur_5/Documents/gpt_tests/Test_5_9_24/dual_prompt/test_{}/target_position_{}.txt".format(trial, trial)
+    # result_path = "/home/ur_5/Documents/gpt_tests/Test_4_9_24/test_24/gpt_result_24.txt"
+
+    # New Directory to log results
+    test_directory = "test_{}".format(trial)
+    path = os.path.join(image_save_path, test_directory)
+    os.mkdir(path)
     
     
     model = "gpt-4o"
