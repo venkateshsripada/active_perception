@@ -135,11 +135,22 @@ bool got_vertices_map = false;
 std::array<int, 4> all_markers = {2,8,5,10};
 
 // Variables to draw cube
-int scale = 5;
+int scale = 3;
 int numDots = 4;
-int numDots_Z = 4;
+int numDots_Z = 3;
 int dotSize = 6;
-float lift_Z = 0.5;
+float lift_Z = 0.4;
+
+// Box in marker frame
+float size_x = 0.5f * 0.42f* scale;
+float size_y = -1e-2f* 2.0f * scale ;     // 0.05*0.01*scale
+float size_z = 0.5f * 0.08f * scale;
+
+// float init_x = -0.5f* 0.1f * scale ;  
+// float init_y = -0.5f* 0.1f * scale ;  
+float init_x = 0.0;
+float init_y= 0.52;
+float z_offset = 0.0;
 
 cv::Scalar orangeColor(255, 128, 0, 255);
 cv::Scalar purpleColor(51, 51, 255, 255);
@@ -412,15 +423,15 @@ cv::Mat calculate_transfoms(int& scale){
     cv::Mat objectPoints(8,3, CV_32F);
   
     // Box in marker frame
-    float size_x = 0.5f * 0.3f* scale;
-    float size_y = 0.5f* 0.02f * scale ;   
-    float size_z = 0.5f * 0.1f * scale;
+    // float size_x = 0.5f * 0.4f* scale;
+    // float size_y = 0.4f* 0.01f * scale ;   
+    // float size_z = 0.5f * 0.1f * scale;
 
-    // float init_x = -0.5f* 0.1f * scale ;  
-    // float init_y = -0.5f* 0.1f * scale ;  
-    float init_x = 0.0;
-    float init_y= 0.6;
-    float z_offset = 0.0;
+    // // float init_x = -0.5f* 0.1f * scale ;  
+    // // float init_y = -0.5f* 0.1f * scale ;  
+    // float init_x = 0.0;
+    // float init_y= 0.5;
+    // float z_offset = 0.0;
   
     objectPoints.at<float>(0, 0) = init_x; objectPoints.at<float>(0, 1) = init_y; objectPoints.at<float>(0, 2) = z_offset;
     objectPoints.at<float>(1, 0) = size_x; objectPoints.at<float>(1, 1) = init_y; objectPoints.at<float>(1, 2) = z_offset;
@@ -575,7 +586,26 @@ void drawDotsOnLine(cv::Mat &Image, cv::Point2f start, cv::Point2f end, cv::Scal
         cv::Point2f dot = start + direction * distance;
         cv::circle(Image, dot, dotSize, color, cv::FILLED);
         if (annotate){
-          cv::putText(Image, std::to_string(index) + "," + std::to_string(numDots - 1- i), dot, cv::FONT_HERSHEY_DUPLEX, 1.0, CV_RGB(118, 185, 0), 2);
+          cv::putText(Image, std::to_string(index) + "; " + std::to_string(numDots - 1- i), dot, cv::FONT_HERSHEY_DUPLEX, 1.0, CV_RGB(118, 185, 0), 2);
+          // First, render the `index` in green
+          // cv::putText(Image, std::to_string(index), dot, cv::FONT_HERSHEY_DUPLEX, 1.0, CV_RGB(118, 185, 0), 2);
+
+          // // Calculate the width of the `index` text to determine where to start drawing the comma
+          // int baseline = 0;
+          // cv::Size indexTextSize = cv::getTextSize(std::to_string(index), cv::FONT_HERSHEY_DUPLEX, 1.0, 2, &baseline);
+          // cv::Point commaPos(dot.x + indexTextSize.width, dot.y);  // Position the comma after the index
+
+          // // Render the comma `","` in black
+          // cv::putText(Image, ",", commaPos, cv::FONT_HERSHEY_DUPLEX, 1.0, CV_RGB(0, 0, 0), 2);
+
+          // // Calculate the width of the comma to determine where to start drawing the next text
+          // cv::Size commaTextSize = cv::getTextSize(",", cv::FONT_HERSHEY_DUPLEX, 1.0, 2, &baseline);
+          // cv::Point nextTextPos(commaPos.x + commaTextSize.width, commaPos.y);  // Position the next text after the comma
+
+          // // Render the `(numDots - 1 - i)` in yellow
+          // cv::putText(Image, std::to_string(numDots - 1 - i), nextTextPos, cv::FONT_HERSHEY_DUPLEX, 1.0, CV_RGB(255, 255, 0), 2);
+
+
         }
     }    
 }
@@ -684,16 +714,7 @@ void draw3dCube_scaled(cv::Mat& Image, cv::Mat& cubepoints, const cv::Mat& Rvec,
    cv::Mat cubePoints(8,3,CV_32F);
   //  float halfSize = 0.05f * 0.5f * scale ;
   
-    // Box in marker frame
-    float size_x = 0.5f * 0.3f* scale;
-    float size_y = 0.5f* 0.02f * scale ;   
-    float size_z = 0.5f * 0.1f * scale;
 
-    // float init_x = -0.5f* 0.1f * scale ;  
-    // float init_y = -0.5f* 0.1f * scale ;  
-    float init_x = 0.0;
-    float init_y= 0.6;
-    float z_offset = 0.0;
   
     objectPoints.at<float>(0, 0) = init_x; objectPoints.at<float>(0, 1) = init_y; objectPoints.at<float>(0, 2) = z_offset;
     objectPoints.at<float>(1, 0) = size_x; objectPoints.at<float>(1, 1) = init_y; objectPoints.at<float>(1, 2) = z_offset;
