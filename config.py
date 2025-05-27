@@ -2,7 +2,7 @@
 scene = 1
 trial = 1
 scene_name = "AP_VLM"
-base_path = "/media/venkatesh/Storage/venkatesh/IROS_data"
+base_path = "/media/venkatesh/Storage/venkatesh/RAL_data"
 
 model = "gpt-4o"
 GPT_4okey = ''
